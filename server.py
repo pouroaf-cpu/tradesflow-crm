@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import queue
+import sys
 import threading
 import time
 from datetime import datetime
@@ -20,6 +21,12 @@ import numpy as np
 import pyaudio
 import websockets
 from dotenv import load_dotenv
+
+# Redirect all output to a log file — pythonw.exe has no console
+_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ara-server.log')
+_log_file = open(_log_path, 'w', buffering=1)
+sys.stdout = _log_file
+sys.stderr = _log_file
 
 load_dotenv(".env.local")
 

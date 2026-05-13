@@ -517,6 +517,16 @@ export default function ContactPage() {
           ● WS {wsStatus}
         </span>
         {lastWsMsg && <span style={{ color: '#666' }}>last: {lastWsMsg}</span>}
+        <button
+          onClick={() => wsRef.current?.send(JSON.stringify({ type: 'manual_start' }))}
+          style={{
+            marginLeft: 'auto', background: '#1d4ed8', color: '#fff',
+            border: 'none', borderRadius: 4, padding: '2px 10px',
+            fontSize: 11, cursor: 'pointer', fontFamily: 'monospace',
+          }}
+        >
+          ▶ test cockpit
+        </button>
       </div>
 
       {/* Cockpit slide-in overlay */}
