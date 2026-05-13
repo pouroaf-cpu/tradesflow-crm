@@ -42,6 +42,10 @@ export default function Dashboard() {
   useEffect(() => { fetchContacts() }, [fetchContacts])
 
   useEffect(() => {
+    fetch('/api/start-ara', { method: 'POST' }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
     const q = localStorage.getItem('tf_queue')
     const c = localStorage.getItem('tf_queue_current')
     if (q && c) setSavedQueue({ queue: q, current: c })
