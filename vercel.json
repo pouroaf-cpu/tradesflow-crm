@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/closed-customer-sms",
+      "schedule": "0 21 * * *"
+    }
+  ]
+}

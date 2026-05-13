@@ -1,0 +1,6 @@
+websockets>=12.0
+anthropic>=0.25.0
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.14
+numpy>=1.24.0
+python-dotenv>=1.0.0
