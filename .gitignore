@@ -24,6 +24,8 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+ara-server.log
+ara-nextjs.log
 
 # local env files
 .env*.local
