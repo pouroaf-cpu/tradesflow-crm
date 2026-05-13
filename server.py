@@ -34,7 +34,7 @@ SAMPLE_RATE = 16000
 CHUNK = 1024
 CHANNELS = 1
 FORMAT = pyaudio.paInt16
-SILENCE_THRESHOLD = 600       # RMS amplitude — raise if too sensitive
+SILENCE_THRESHOLD = 300       # RMS amplitude — raise if too sensitive
 SILENCE_SECONDS = 1.8         # seconds of silence before flushing a phrase
 CALL_DETECT_SECONDS = 0.6     # seconds of audio above threshold to trigger call_started
 MIN_PHRASE_SECONDS = 0.4      # ignore very short bursts (< 0.4s)
@@ -143,6 +143,7 @@ async def vad_stt_loop():
     silent_frames = 0
     voiced_duration = 0.0  # seconds above threshold in current burst
     frames_per_sec = SAMPLE_RATE / CHUNK
+    last_rms_log = 0.0
 
     while True:
         try:
@@ -154,6 +155,11 @@ async def vad_stt_loop():
 
         level = rms(chunk)
         is_voiced = level > SILENCE_THRESHOLD
+
+        now_t = time.time()
+        if now_t - last_rms_log >= 1.0:
+            print(f"[audio] RMS={level:.0f}  threshold={SILENCE_THRESHOLD}  voiced={is_voiced}  call_active={call_active}")
+            last_rms_log = now_t
 
         if is_voiced:
             voiced_frames.append(chunk)

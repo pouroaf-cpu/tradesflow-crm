@@ -63,6 +63,10 @@ export default function ContactPage() {
   const [nextActionDate, setNextActionDate] = useState('')
   const [newNote, setNewNote] = useState('')
 
+  // WS debug state
+  const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
+  const [lastWsMsg, setLastWsMsg] = useState('')
+
   // Cockpit state
   const [cockpitOpen, setCockpitOpen] = useState(false)
   const [isLive, setIsLive] = useState(false)
@@ -110,9 +114,13 @@ export default function ContactPage() {
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
 
+    ws.onopen = () => setWsStatus('connected')
+
     ws.onmessage = (e) => {
       let msg: Record<string, unknown>
       try { msg = JSON.parse(e.data) } catch { return }
+
+      setLastWsMsg(`${String(msg.type)} @ ${new Date().toLocaleTimeString('en-NZ')}`)
 
       switch (msg.type) {
         case 'call_started':
@@ -146,6 +154,7 @@ export default function ContactPage() {
     }
 
     ws.onclose = () => {
+      setWsStatus('disconnected')
       reconnectRef.current = setTimeout(connect, RECONNECT_DELAY)
     }
   }, [])
@@ -495,6 +504,19 @@ export default function ContactPage() {
           </div>
 
         </div>
+      </div>
+
+      {/* WS debug bar */}
+      <div style={{
+        position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 999,
+        background: '#0a0a0a', borderTop: '1px solid #222',
+        padding: '3px 12px', display: 'flex', gap: 20, alignItems: 'center',
+        fontFamily: 'monospace', fontSize: 11,
+      }}>
+        <span style={{ color: wsStatus === 'connected' ? '#4ade80' : wsStatus === 'connecting' ? '#fbbf24' : '#f87171' }}>
+          ● WS {wsStatus}
+        </span>
+        {lastWsMsg && <span style={{ color: '#666' }}>last: {lastWsMsg}</span>}
       </div>
 
       {/* Cockpit slide-in overlay */}
