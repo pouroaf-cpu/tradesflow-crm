@@ -7,13 +7,13 @@ import type { Contact } from '@/lib/sheets'
 
 const STAGES = ['All', 'Uncalled', 'Contacted', 'Interested', 'Follow-up Booked', 'Closed', 'Not Interested']
 
-const STAGE_COLORS: Record<string, string> = {
-  'Uncalled': '#64748b',
-  'Contacted': '#3b82f6',
-  'Interested': '#f59e0b',
-  'Follow-up Booked': '#8b5cf6',
-  'Closed': '#22c55e',
-  'Not Interested': '#ef4444',
+const STAGE_COLORS: Record<string, { bg: string; color: string; border: string }> = {
+  'Uncalled':         { bg: '#f1efe8', color: '#666',    border: '#ddd' },
+  'Contacted':        { bg: '#e3f2fd', color: '#1565c0', border: '#bbdefb' },
+  'Interested':       { bg: '#fff8e1', color: '#e65100', border: '#ffe082' },
+  'Follow-up Booked': { bg: '#ede7f6', color: '#4527a0', border: '#d1c4e9' },
+  'Closed':           { bg: '#e8f5e9', color: '#2e7d32', border: '#c8e6c9' },
+  'Not Interested':   { bg: '#ffebee', color: '#b71c1c', border: '#ffcdd2' },
 }
 
 function normaliseStage(s: string) {
@@ -107,11 +107,12 @@ export default function Dashboard() {
     <div style={{ minHeight: '100vh', padding: '0 0 4rem' }}>
       <div style={{
         background: 'var(--surface)',
-        borderBottom: '1px solid var(--border)',
-        padding: '1rem 1.25rem',
+        borderBottom: '0.5px solid var(--border)',
+        padding: '0 1.25rem',
+        height: 44,
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
+        gap: 12,
         position: 'sticky',
         top: 0,
         zIndex: 10,
@@ -132,56 +133,61 @@ export default function Dashboard() {
             }}>Invoices</Link>
           </div>
         </div>
-        <button className="btn-ghost" onClick={logout} style={{ padding: '6px 12px', fontSize: 12 }}>Log out</button>
+        <div style={{ flex: 1 }} />
+        <button className="btn-ghost" onClick={logout} style={{ padding: '5px 10px', fontSize: 12 }}>Log out</button>
       </div>
 
       <div style={{ padding: '1.25rem' }}>
 
         {savedQueue && (
           <div style={{
-            background: '#1a2e1a',
-            border: '1px solid #16a34a',
+            background: '#f0fdf4',
+            border: '0.5px solid #bbf7d0',
             borderRadius: 'var(--radius)',
-            padding: '12px 16px',
+            padding: '11px 16px',
             marginBottom: '1rem',
             display: 'flex',
             alignItems: 'center',
-            gap: 12,
+            gap: 10,
             flexWrap: 'wrap',
           }}>
-            <span style={{ fontSize: 16 }}>⏸️</span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#4ade80' }}>Queue in progress</div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: '#15803d' }}>Queue in progress</div>
               <div style={{ fontSize: 12, color: 'var(--muted)' }}>You left a call queue — pick up where you left off</div>
             </div>
-            <button className="btn-primary" onClick={resumeQueue} style={{ fontSize: 13, padding: '7px 16px' }}>
-              ▶ Resume Queue
+            <button onClick={resumeQueue} style={{ fontSize: 12, fontWeight: 500, border: 'none', borderRadius: 6, padding: '6px 14px', background: '#16a34a', color: '#fff', cursor: 'pointer' }}>
+              ▶ Resume queue
             </button>
-            <button className="btn-ghost" onClick={clearQueue} style={{ fontSize: 12, padding: '7px 12px', color: 'var(--muted)' }}>
+            <button onClick={clearQueue} style={{ fontSize: 12, border: '0.5px solid var(--border)', borderRadius: 6, padding: '6px 12px', background: '#fff', color: 'var(--muted)', cursor: 'pointer' }}>
               Discard
             </button>
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: '1.25rem' }}>
-          {STAGES.slice(1).map(s => (
-            <button
-              key={s}
-              onClick={() => setStageFilter(stageFilter === s ? 'All' : s)}
-              style={{
-                background: stageFilter === s ? STAGE_COLORS[s] : 'var(--surface)',
-                color: stageFilter === s ? '#fff' : 'var(--muted)',
-                border: `1px solid ${stageFilter === s ? STAGE_COLORS[s] : 'var(--border)'}`,
-                borderRadius: 20,
-                padding: '4px 12px',
-                fontSize: 12,
-                fontWeight: 500,
-                cursor: 'pointer',
-              }}
-            >
-              {s} <span style={{ opacity: 0.7 }}>{stageCounts[s] || 0}</span>
-            </button>
-          ))}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: '1.25rem' }}>
+          {STAGES.slice(1).map(s => {
+            const sc = STAGE_COLORS[s]
+            const active = stageFilter === s
+            return (
+              <button
+                key={s}
+                onClick={() => setStageFilter(stageFilter === s ? 'All' : s)}
+                style={{
+                  background: sc?.bg ?? 'var(--surface)',
+                  color: sc?.color ?? 'var(--muted)',
+                  border: `0.5px solid ${active ? (sc?.border ?? 'var(--border)') : 'var(--border)'}`,
+                  outline: active ? `1.5px solid ${sc?.border ?? 'transparent'}` : 'none',
+                  borderRadius: 20,
+                  padding: '4px 12px',
+                  fontSize: 12,
+                  fontWeight: active ? 600 : 400,
+                  cursor: 'pointer',
+                }}
+              >
+                {s} <span style={{ opacity: 0.7 }}>{stageCounts[s] || 0}</span>
+              </button>
+            )
+          })}
           {stageFilter !== 'All' && (
             <button onClick={() => setStageFilter('All')} className="btn-ghost" style={{ borderRadius: 20, padding: '4px 12px', fontSize: 12 }}>
               clear ×
@@ -203,9 +209,9 @@ export default function Dashboard() {
 
         <div style={{
           background: 'var(--surface)',
-          border: '1px solid var(--border)',
+          border: '0.5px solid var(--border)',
           borderRadius: 'var(--radius)',
-          padding: '1rem 1.25rem',
+          padding: '12px 16px',
           marginBottom: '1.25rem',
           display: 'flex',
           alignItems: 'center',
@@ -213,16 +219,16 @@ export default function Dashboard() {
           flexWrap: 'wrap',
         }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Build a call queue</div>
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>Build a call queue</div>
             <div style={{ fontSize: 12, color: 'var(--muted)' }}>
               {filtered.length} contacts match — prioritises warm leads first
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <select value={queueSize} onChange={e => setQueueSize(Number(e.target.value))} style={{ width: 80 }}>
+            <select value={queueSize} onChange={e => setQueueSize(Number(e.target.value))} style={{ width: 90 }}>
               {[5, 10, 15, 20].map(n => <option key={n} value={n}>{n} calls</option>)}
             </select>
-            <button className="btn-primary" onClick={buildQueue} disabled={filtered.length === 0}>
+            <button className="btn-primary" onClick={buildQueue} disabled={filtered.length === 0} style={{ fontSize: 12, padding: '7px 16px' }}>
               Start queue →
             </button>
           </div>
@@ -231,30 +237,31 @@ export default function Dashboard() {
         {loading ? (
           <div style={{ color: 'var(--muted)', textAlign: 'center', padding: '3rem' }}>Loading contacts...</div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
             {filtered.map(c => {
               const normStage = normaliseStage(c.pipelineStage)
+              const sc = STAGE_COLORS[normStage]
               return (
                 <div
                   key={c.rowIndex}
                   onClick={() => router.push(`/contact/${c.rowIndex}`)}
                   style={{
                     background: 'var(--surface)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius)',
-                    padding: '0.85rem 1.1rem',
+                    border: '0.5px solid var(--border)',
+                    borderRadius: 9,
+                    padding: '11px 14px',
                     cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 12,
-                    transition: 'border-color 0.15s',
+                    transition: 'border-color 0.12s',
                   }}
-                  onMouseEnter={e => (e.currentTarget.style.borderColor = '#444')}
+                  onMouseEnter={e => (e.currentTarget.style.borderColor = '#c5cae9')}
                   onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border)')}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 2 }}>{c.name || '(no name)'}</div>
-                    <div style={{ fontSize: 12, color: 'var(--muted)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 2 }}>{c.name || '(no name)'}</div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       {c.tradeType && <span>{c.tradeType}</span>}
                       {c.region && <span>{c.region}</span>}
                       {c.phone && <span>{c.phone}</span>}
@@ -263,17 +270,17 @@ export default function Dashboard() {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                     {c.nextActionDate && (
-                      <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 500 }}>
+                      <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>
                         📅 {c.nextActionDate}
                       </span>
                     )}
                     <span style={{
                       fontSize: 11,
-                      fontWeight: 600,
+                      fontWeight: 500,
                       padding: '3px 9px',
                       borderRadius: 20,
-                      background: STAGE_COLORS[normStage] || '#333',
-                      color: '#fff',
+                      background: sc?.bg ?? '#f1efe8',
+                      color: sc?.color ?? '#666',
                     }}>
                       {normStage}
                     </span>

@@ -3,26 +3,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import type { Contact } from '@/lib/sheets'
-import AraCockpit, {
-  type CallerIntel,
-  type ClaudeFeedMessage,
-  type TranscriptLine,
-  type Objection,
+import type {
+  ClaudeFeedMessage,
+  TranscriptLine,
+  Objection,
 } from '@/components/AraCockpit'
 
 const WS_URL = 'ws://localhost:5000'
 const RECONNECT_DELAY = 3000
 
 const STAGES = ['Uncalled', 'Contacted', 'Interested', 'Follow-up Booked', 'Closed', 'Not Interested']
-const OUTCOMES = ['No Answer', 'Left Voicemail', 'Not Interested', 'Call Back', 'Interested', 'Closed']
 
-const STAGE_COLORS: Record<string, { bg: string; color: string }> = {
-  'Uncalled':          { bg: '#E2E8F0', color: '#475569' },
-  'Contacted':         { bg: '#DBEAFE', color: '#1D4ED8' },
-  'Interested':        { bg: '#FEF3C7', color: '#92400E' },
-  'Follow-up Booked':  { bg: '#EDE9FE', color: '#5B21B6' },
-  'Closed':            { bg: '#DCFCE7', color: '#15803D' },
-  'Not Interested':    { bg: '#FEE2E2', color: '#B91C1C' },
+const moodColors: Record<string, { bg: string; text: string; bar: string }> = {
+  Warm:       { bg: '#e8f5e9', text: '#2e7d32', bar: '#4caf50' },
+  Neutral:    { bg: '#fff8e1', text: '#f57f17', bar: '#ffc107' },
+  Guarded:    { bg: '#fff3e0', text: '#e65100', bar: '#ff9800' },
+  Resistant:  { bg: '#fce4ec', text: '#b71c1c', bar: '#ef5350' },
+  Interested: { bg: '#e3f2fd', text: '#0d47a1', bar: '#2196f3' },
 }
 
 function formatNotes(raw: string): { text: string; ts: string }[] {
@@ -48,6 +45,40 @@ function normaliseStage(s: string) {
   return s
 }
 
+function formatDuration(s: number) {
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+}
+
+const sectionLabel: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 500,
+  color: '#888',
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  marginBottom: 6,
+}
+
+const fieldRow: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  padding: '6px 0',
+  borderBottom: '0.5px solid #f0ede6',
+  fontSize: 12,
+}
+
+const inputStyle: React.CSSProperties = {
+  width: '100%',
+  fontSize: 13,
+  border: '0.5px solid #e8e6df',
+  borderRadius: 6,
+  padding: '7px 10px',
+  background: '#fafaf8',
+  color: '#1a1a1a',
+  boxSizing: 'border-box',
+  fontFamily: 'inherit',
+  outline: 'none',
+}
+
 export default function ContactPage() {
   const params = useParams()
   const searchParams = useSearchParams()
@@ -59,16 +90,14 @@ export default function ContactPage() {
   const [saving, setSaving] = useState(false)
 
   const [stage, setStage] = useState('')
-  const [outcome, setOutcome] = useState('')
   const [nextActionDate, setNextActionDate] = useState('')
   const [newNote, setNewNote] = useState('')
 
-  // WS debug state
+  // WS state
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
   const [lastWsMsg, setLastWsMsg] = useState('')
 
   // Cockpit state
-  const [cockpitOpen, setCockpitOpen] = useState(false)
   const [isLive, setIsLive] = useState(false)
   const [claudeFeed, setClaudeFeed] = useState<ClaudeFeedMessage[]>([])
   const [transcript, setTranscript] = useState<TranscriptLine[]>([])
@@ -76,9 +105,14 @@ export default function ContactPage() {
   const [heat, setHeat] = useState(5)
   const [instinct, setInstinct] = useState('Waiting for the call…')
   const [objection, setObjection] = useState<Objection>(null)
+  const [callDuration, setCallDuration] = useState(0)
+  const [newMessageId, setNewMessageId] = useState<number | null>(null)
+  const [prevFeedLength, setPrevFeedLength] = useState(0)
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const transcriptRef = useRef<HTMLDivElement>(null)
 
   const queueParam = searchParams.get('queue')
   const queue = queueParam ? queueParam.split(',').map(Number) : []
@@ -94,7 +128,6 @@ export default function ContactPage() {
     if (!found) { router.push('/dashboard'); return }
     setContact(found)
     setStage(normaliseStage(found.pipelineStage))
-    setOutcome(found.callOutcome || '')
     setNextActionDate(found.nextActionDate || '')
     setLoading(false)
   }, [rowIndex, router])
@@ -108,7 +141,32 @@ export default function ContactPage() {
     }
   }, [queueParam, rowIndex])
 
-  // WebSocket for cockpit
+  // Call duration timer
+  useEffect(() => {
+    if (isLive) {
+      timerRef.current = setInterval(() => setCallDuration(d => d + 1), 1000)
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [isLive])
+
+  // New message highlight
+  useEffect(() => {
+    if (claudeFeed.length > prevFeedLength && claudeFeed[0]) {
+      setNewMessageId(claudeFeed[0].id)
+      setPrevFeedLength(claudeFeed.length)
+      setTimeout(() => setNewMessageId(null), 1000)
+    }
+  }, [claudeFeed, prevFeedLength])
+
+  // Auto-scroll transcript
+  useEffect(() => {
+    if (transcriptRef.current) {
+      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
+    }
+  }, [transcript])
+
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
     const ws = new WebSocket(WS_URL)
@@ -130,8 +188,10 @@ export default function ContactPage() {
           setHeat(5)
           setInstinct('Call connected…')
           setObjection(null)
+          setCallDuration(0)
+          setPrevFeedLength(0)
+          setNewMessageId(null)
           setIsLive(true)
-          setCockpitOpen(true)
           break
         case 'transcript':
           setTranscript(prev => [...prev, msg.line as TranscriptLine])
@@ -185,7 +245,7 @@ export default function ContactPage() {
     await fetch('/api/contact', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rowIndex, pipelineStage: stage, callOutcome: outcome, lastCall: today, nextActionDate, attempts, notes: updatedNotes }),
+      body: JSON.stringify({ rowIndex, pipelineStage: stage, lastCall: today, nextActionDate, attempts, notes: updatedNotes }),
     })
     setSaving(false)
     if (nextInQueue) {
@@ -214,205 +274,196 @@ export default function ContactPage() {
     await fetch('/api/contact', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rowIndex, pipelineStage: stage, callOutcome: outcome, lastCall: today, nextActionDate, notes: updatedNotes }),
+      body: JSON.stringify({ rowIndex, pipelineStage: stage, lastCall: today, nextActionDate, notes: updatedNotes }),
     })
     setNewNote('')
     setSaving(false)
     fetchContact()
   }
 
-  const handleCockpitSaveAndNext = (notes: string) => {
-    setCockpitOpen(false)
-    void saveAndNext(notes)
-  }
-
-  const handleCockpitSaveOnly = (notes: string) => {
-    void saveOnly(notes)
-  }
-
-  const handleEndCall = () => {
-    wsRef.current?.send(JSON.stringify({ type: 'manual_end' }))
-    setIsLive(false)
-  }
-
   if (loading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--muted)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: '#888' }}>
       Loading...
     </div>
   )
 
   if (!contact) return null
 
-  const primaryNumber = (contact.mobile?.trim() && contact.mobile.trim() !== '0' && contact.mobile.trim() !== '')
-    ? contact.mobile.trim()
-    : contact.phone?.trim() || null
-
-  const altNumber = (contact.mobile?.trim() && contact.phone?.trim() && contact.mobile.trim() !== contact.phone.trim())
-    ? contact.phone.trim()
-    : null
+  const primaryNumber = contact.phone?.trim() || null
 
   const notes = formatNotes(contact.notes)
-  const displayStage = normaliseStage(contact.pipelineStage)
-  const stageStyle = STAGE_COLORS[displayStage] || { bg: '#E2E8F0', color: '#475569' }
-
-  const callerIntel: CallerIntel = {
-    rowNumber: contact.rowIndex,
-    name: contact.name,
-    tradeType: contact.tradeType,
-    phone: contact.phone,
-    region: contact.region,
-    attempts: parseInt(contact.attempts || '0', 10),
-    lastCall: contact.lastCall || '—',
-  }
+  const moodStyle = moodColors[mood] || moodColors.Neutral
 
   return (
-    <div style={{ display: 'grid', gridTemplateRows: 'auto 1fr', minHeight: '100vh', background: 'var(--bg)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#f5f4ef', overflow: 'hidden' }}>
 
-      {/* Top nav */}
-      <div style={{
-        background: 'var(--surface)',
-        borderBottom: '1px solid var(--border)',
-        padding: '0 1.25rem',
-        height: 48,
+      {/* TOP NAV */}
+      <nav style={{
+        background: '#fff',
+        borderBottom: '0.5px solid #e8e6df',
+        height: 44,
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
-        position: 'sticky',
-        top: 0,
-        zIndex: 10,
+        padding: '0 16px',
+        gap: 10,
+        flexShrink: 0,
       }}>
-        <button className="btn-ghost" onClick={() => router.push('/dashboard')} style={{ padding: '4px 10px', fontSize: 13 }}>
+        <button
+          onClick={() => router.push('/dashboard')}
+          style={{ fontSize: 13, color: '#888', border: '0.5px solid #e8e6df', borderRadius: 6, padding: '4px 10px', background: 'transparent', cursor: 'pointer' }}
+        >
           ← Back
         </button>
         {queue.length > 0 && (
-          <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {currentIndex + 1} / {queue.length}
-          </span>
+          <span style={{ fontSize: 12, color: '#888' }}>{currentIndex + 1} / {queue.length}</span>
         )}
-        <div style={{ flex: 1 }} />
         {prevInQueue && (
-          <button className="btn-ghost" onClick={() => router.push(`/contact/${prevInQueue}?queue=${queueParam}`)} style={{ fontSize: 12, padding: '4px 10px' }}>
+          <button
+            onClick={() => router.push(`/contact/${prevInQueue}?queue=${queueParam}`)}
+            style={{ fontSize: 12, color: '#888', border: '0.5px solid #e8e6df', borderRadius: 6, padding: '4px 10px', background: 'transparent', cursor: 'pointer' }}
+          >
             ← Prev
           </button>
         )}
         {nextInQueue && (
-          <button className="btn-ghost" onClick={() => router.push(`/contact/${nextInQueue}?queue=${queueParam}`)} style={{ fontSize: 12, padding: '4px 10px' }}>
+          <button
+            onClick={() => router.push(`/contact/${nextInQueue}?queue=${queueParam}`)}
+            style={{ fontSize: 12, color: '#888', border: '0.5px solid #e8e6df', borderRadius: 6, padding: '4px 10px', background: 'transparent', cursor: 'pointer' }}
+          >
             Next →
           </button>
         )}
-      </div>
+        <div style={{ flex: 1 }} />
+        {isLive && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#e8f5e9', border: '0.5px solid #a5d6a7', borderRadius: 20, padding: '3px 10px', fontSize: 11, fontWeight: 500, color: '#2e7d32' }}>
+            <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#43a047', animation: 'pulse 1.5s infinite' }} />
+            LIVE {formatDuration(callDuration)}
+          </div>
+        )}
+        <button
+          onClick={() => saveOnly()}
+          disabled={saving}
+          style={{ fontSize: 12, border: '0.5px solid #e8e6df', borderRadius: 6, padding: '5px 12px', background: '#fff', cursor: 'pointer', color: '#444' }}
+        >
+          Save only
+        </button>
+        <button
+          onClick={() => nextInQueue ? saveAndNext() : saveOnly()}
+          disabled={saving}
+          style={{ fontSize: 12, border: 'none', borderRadius: 6, padding: '5px 14px', background: '#1a237e', color: '#fff', cursor: 'pointer', fontWeight: 500 }}
+        >
+          {saving ? 'Saving…' : nextInQueue ? 'Save & next →' : 'Save & close'}
+        </button>
+      </nav>
 
-      {/* Two-column layout */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: '300px 1fr',
-        height: 'calc(100vh - 48px)',
-        overflow: 'hidden',
-      }}>
+      {/* BODY */}
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '260px 1fr', overflow: 'hidden' }}>
 
-        {/* ── SIDEBAR ── */}
+        {/* LEFT COLUMN */}
         <div style={{
-          background: 'var(--surface)',
-          borderRight: '1px solid var(--border)',
-          padding: '28px 20px',
+          background: '#fff',
+          borderRight: '0.5px solid #e8e6df',
+          padding: '18px 16px',
           display: 'flex',
           flexDirection: 'column',
-          gap: 28,
+          gap: 16,
           overflowY: 'auto',
         }}>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          {/* Avatar + name */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{
-              width: 48, height: 48, borderRadius: '50%',
-              background: '#DBEAFE', color: '#1D4ED8',
+              width: 42, height: 42, borderRadius: '50%',
+              background: '#e8eaf6', color: '#1a237e',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontWeight: 600, fontSize: 15, flexShrink: 0,
+              fontWeight: 500, fontSize: 14, flexShrink: 0,
             }}>
               {initials(contact.name)}
             </div>
             <div>
-              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text)', marginBottom: 3 }}>{contact.name}</div>
-              <div style={{ fontSize: 13, color: 'var(--muted)' }}>{contact.tradeType || '—'}</div>
+              <p style={{ fontSize: 15, fontWeight: 500, color: '#1a1a1a', margin: 0, marginBottom: 2 }}>{contact.name}</p>
+              <p style={{ fontSize: 12, color: '#888', margin: 0 }}>
+                {contact.tradeType || '—'}{contact.region ? ` · ${contact.region}` : ''}
+              </p>
             </div>
           </div>
 
-          {primaryNumber && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <a
-                href={`tel:${primaryNumber.replace(/\s/g, '')}`}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-                  padding: '12px 16px', borderRadius: 8,
-                  background: '#16a34a', color: '#fff',
-                  textDecoration: 'none', fontSize: 15, fontWeight: 700,
-                  letterSpacing: '0.02em',
-                }}
-              >
-                <span style={{ fontSize: 16 }}>📞</span>
-                {primaryNumber}
-              </a>
-              {altNumber && (
-                <a
-                  href={`tel:${altNumber.replace(/\s/g, '')}`}
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-                    padding: '11px 16px', borderRadius: 8,
-                    background: '#15803d', color: '#fff',
-                    textDecoration: 'none', fontSize: 13, fontWeight: 500,
-                    opacity: 0.85,
-                  }}
-                >
-                  <span style={{ fontSize: 14 }}>📞</span>
-                  {altNumber}
-                </a>
-              )}
-            </div>
-          )}
+          {/* Phone button — primary number only */}
+          <a
+            href={primaryNumber ? `tel:${primaryNumber.replace(/\s/g, '')}` : undefined}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              padding: '10px 14px', borderRadius: 8,
+              background: '#16a34a', color: '#fff',
+              textDecoration: 'none', fontSize: 14, fontWeight: 500,
+              opacity: primaryNumber ? 1 : 0.5,
+              pointerEvents: primaryNumber ? 'auto' : 'none',
+            }}
+          >
+            📞 {primaryNumber || 'No number'}
+          </a>
 
-          <div>
-            <div style={sectionLabel}>Status</div>
-            <span style={{
-              display: 'inline-block',
-              fontSize: 12, fontWeight: 600,
-              padding: '4px 12px', borderRadius: 20,
-              background: stageStyle.bg, color: stageStyle.color,
-            }}>
-              {displayStage}
-            </span>
-          </div>
-
+          {/* Contact details */}
           <div>
             <div style={sectionLabel}>Contact</div>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {[
-                ['Mobile', contact.mobile?.trim() || '—'],
-                ['Phone', contact.phone?.trim() || '—'],
-                ['Region', contact.region || '—'],
-                ['Decision maker', contact.decisionMaker || '—'],
-                ['Attempts', contact.attempts && contact.attempts !== '0' ? contact.attempts : '0'],
-                ['Last called', contact.lastCall || 'Never'],
-              ].map(([label, value]) => (
-                <div key={label} style={fieldRow}>
-                  <span style={{ color: 'var(--muted)', fontSize: 13 }}>{label}</span>
-                  <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{value}</span>
-                </div>
-              ))}
-            </div>
+            {[
+              ['Mobile', contact.mobile?.trim() || '—'],
+              ['Region', contact.region || '—'],
+              ['Attempts', contact.attempts && contact.attempts !== '0' ? contact.attempts : '0'],
+              ['Last called', contact.lastCall || 'Never'],
+            ].map(([label, value]) => (
+              <div key={label} style={fieldRow}>
+                <span style={{ color: '#888' }}>{label}</span>
+                <span style={{ fontWeight: 500, color: '#1a1a1a' }}>{value}</span>
+              </div>
+            ))}
           </div>
 
+          {/* Pipeline stage */}
+          <div>
+            <div style={sectionLabel}>Pipeline stage</div>
+            <select
+              value={stage}
+              onChange={e => setStage(e.target.value)}
+              style={{ ...inputStyle, appearance: 'none' as const }}
+            >
+              {STAGES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+
+          {/* Next action date */}
+          <div>
+            <div style={sectionLabel}>Next action date</div>
+            <input
+              type="date"
+              value={nextActionDate}
+              onChange={e => setNextActionDate(e.target.value)}
+              style={inputStyle}
+            />
+          </div>
+
+          {/* Notes textarea — grows to fill available space */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 80 }}>
+            <div style={sectionLabel}>Notes from this call</div>
+            <textarea
+              value={newNote}
+              onChange={e => setNewNote(e.target.value)}
+              placeholder="What happened? Any objections, commitments, or follow-up context..."
+              style={{ ...inputStyle, flex: 1, resize: 'vertical', minHeight: 64 }}
+            />
+          </div>
+
+          {/* Call history */}
           {notes.length > 0 && (
             <div>
               <div style={sectionLabel}>Call history</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {notes.map((n, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                    <div style={{
-                      width: 7, height: 7, borderRadius: '50%',
-                      background: 'var(--border)', marginTop: 5, flexShrink: 0,
-                    }} />
+                  <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#d1cfc8', marginTop: 4, flexShrink: 0 }} />
                     <div>
-                      {n.ts && <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 2 }}>{n.ts}</div>}
-                      <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text)' }}>{n.text}</div>
+                      {n.ts && <div style={{ fontSize: 10, color: '#aaa', marginBottom: 2 }}>{n.ts}</div>}
+                      <div style={{ fontSize: 12, color: '#444', lineHeight: 1.4 }}>{n.text}</div>
                     </div>
                   </div>
                 ))}
@@ -421,178 +472,159 @@ export default function ContactPage() {
           )}
         </div>
 
-        {/* ── MAIN ── */}
-        <div style={{
-          padding: '32px 40px',
-          overflowY: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 20,
-        }}>
+        {/* RIGHT COLUMN */}
+        <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Log this call</div>
-              <div style={{ fontSize: 14, color: 'var(--muted)' }}>
-                {contact.name} · {new Date().toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}
+          {/* Radar bar */}
+          <div style={{
+            background: moodStyle.bg,
+            borderBottom: `1px solid ${moodStyle.bar}22`,
+            padding: '8px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 14,
+            flexShrink: 0,
+          }}>
+            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, color: '#aaa', textTransform: 'uppercase' }}>Radar</span>
+            <span style={{ background: moodStyle.bg, border: `1px solid ${moodStyle.bar}44`, borderRadius: 20, padding: '3px 12px', fontSize: 12, fontWeight: 500, color: moodStyle.text }}>
+              {mood}
+            </span>
+            <div style={{ flex: 1, maxWidth: 140, height: 5, background: '#f0ede6', borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${heat * 10}%`, background: moodStyle.bar, borderRadius: 3, transition: 'width 0.6s ease' }} />
+            </div>
+            <span style={{ fontSize: 11, fontWeight: 500, color: moodStyle.text }}>{heat}/10</span>
+            <span style={{ fontSize: 12, color: '#555', fontStyle: 'italic' }}>&ldquo;{instinct}&rdquo;</span>
+          </div>
+
+          {/* Objection card */}
+          {objection && (
+            <div style={{
+              background: '#fff8e1', border: '0.5px solid #ffe082', borderRadius: 7,
+              padding: '7px 12px', fontSize: 11, color: '#e65100',
+              margin: '8px 12px 0', flexShrink: 0,
+            }}>
+              <span style={{ fontWeight: 500 }}>⚠ {objection.text} — </span>{objection.response}
+            </div>
+          )}
+
+          {/* Claude Feed + Live Transcript panels */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 12,
+            padding: 12,
+            flex: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+          }}>
+
+            {/* Claude Feed */}
+            <div style={{ background: '#fff', border: '0.5px solid #e8e6df', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <div style={{ padding: '10px 14px', borderBottom: '0.5px solid #f0ede6', display: 'flex', alignItems: 'center', gap: 7, flexShrink: 0 }}>
+                <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#4caf50', boxShadow: '0 0 0 2px #c8e6c9' }} />
+                <span style={{ fontSize: 10, fontWeight: 500, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Claude feed</span>
+              </div>
+              <div style={{ flex: 1, padding: '10px 12px', overflowY: 'auto' }}>
+                {claudeFeed.length === 0 && (
+                  <div style={{ fontSize: 12, color: '#bbb', fontStyle: 'italic', padding: 8 }}>Waiting for the call to start…</div>
+                )}
+                {claudeFeed.map(msg => (
+                  <div
+                    key={msg.id}
+                    style={{
+                      background: msg.id === newMessageId ? '#e8f5e9' : '#fafaf8',
+                      border: `0.5px solid ${msg.id === newMessageId ? '#a5d6a7' : '#f0ede6'}`,
+                      borderRadius: 8,
+                      padding: '8px 12px',
+                      marginBottom: 7,
+                      transition: 'background 0.5s, border 0.5s',
+                      animation: msg.id === newMessageId ? 'slideIn 0.3s ease' : 'none',
+                    }}
+                  >
+                    <div style={{ fontSize: 10, color: '#bbb', fontWeight: 500, marginBottom: 3 }}>{msg.time}</div>
+                    <div style={{ fontSize: 12, color: '#333', lineHeight: 1.4 }}>{msg.text}</div>
+                  </div>
+                ))}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-              <button className="btn-ghost" onClick={() => saveOnly()} disabled={saving} style={{ fontSize: 13 }}>
-                Save only
-              </button>
-              {queue.length > 0 && nextInQueue ? (
-                <button className="btn-primary" onClick={() => saveAndNext()} disabled={saving}>
-                  {saving ? 'Saving...' : 'Save & next →'}
-                </button>
-              ) : (
-                <button className="btn-primary" onClick={() => saveOnly()} disabled={saving}>
-                  {saving ? 'Saving...' : 'Save & close'}
-                </button>
-              )}
+
+            {/* Live Transcript */}
+            <div style={{ background: '#fff', border: '0.5px solid #e8e6df', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <div style={{ padding: '10px 14px', borderBottom: '0.5px solid #f0ede6', display: 'flex', alignItems: 'center', gap: 7, flexShrink: 0 }}>
+                <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#2196f3', boxShadow: '0 0 0 2px #bbdefb' }} />
+                <span style={{ fontSize: 10, fontWeight: 500, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Live transcript</span>
+              </div>
+              <div ref={transcriptRef} style={{ flex: 1, padding: '10px 12px', overflowY: 'auto' }}>
+                {transcript.length === 0 && (
+                  <div style={{ fontSize: 12, color: '#bbb', fontStyle: 'italic', padding: 8 }}>Transcript will appear here…</div>
+                )}
+                {transcript.map(line => (
+                  <div key={line.id} style={{ display: 'flex', gap: 8, marginBottom: 5, alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: 10, color: '#bbb', fontWeight: 500, minWidth: 32, paddingTop: 1, fontVariantNumeric: 'tabular-nums' }}>{line.time}</span>
+                    <span style={{ fontSize: 10, fontWeight: 500, color: line.label === 'Caller' || line.label === 'Pouroa' ? '#1a237e' : '#c62828', minWidth: 48, paddingTop: 1 }}>
+                      {line.label === 'Caller' || line.label === 'Pouroa' ? 'Pou' : line.label}
+                    </span>
+                    <span style={{ fontSize: 12, color: '#333', lineHeight: 1.4, flex: 1, minWidth: 0, wordBreak: 'break-word', whiteSpace: 'normal' }}>{line.text}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 
-          <div style={card}>
-            <div style={sectionLabel}>Outcome</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-              {OUTCOMES.map(o => (
-                <button
-                  key={o}
-                  onClick={() => setOutcome(o)}
-                  style={{
-                    padding: '10px 8px',
-                    borderRadius: 8,
-                    border: `1px solid ${outcome === o ? 'var(--accent)' : 'var(--border)'}`,
-                    background: outcome === o ? 'var(--accent-dim)' : 'var(--bg)',
-                    color: outcome === o ? 'var(--accent)' : 'var(--muted)',
-                    fontWeight: outcome === o ? 600 : 400,
-                    fontSize: 13,
-                    cursor: 'pointer',
-                    textAlign: 'center',
-                    transition: 'all 0.12s',
-                  }}
-                >
-                  {o}
-                </button>
-              ))}
-            </div>
+          {/* Bottom bar — WS status + test cockpit */}
+          <div style={{
+            background: '#fff',
+            borderTop: '0.5px solid #e8e6df',
+            padding: '8px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            flexShrink: 0,
+          }}>
+            <span style={{
+              display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+              background: wsStatus === 'connected' ? '#4caf50' : wsStatus === 'connecting' ? '#fbbf24' : '#f87171',
+            }} />
+            <span style={{ fontSize: 11, color: wsStatus === 'connected' ? '#4caf50' : '#888', fontFamily: 'monospace' }}>
+              WS {wsStatus}
+            </span>
+            {lastWsMsg && (
+              <span style={{ fontSize: 11, color: '#aaa', fontFamily: 'monospace' }}>last: {lastWsMsg}</span>
+            )}
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={() => wsRef.current?.send(JSON.stringify({ type: 'manual_start' }))}
+              style={{ fontSize: 11, background: '#1a237e', color: '#fff', border: 'none', borderRadius: 4, padding: '3px 10px', cursor: 'pointer', fontFamily: 'monospace' }}
+            >
+              ▶ test cockpit
+            </button>
+            <button
+              onClick={() => {
+                setIsLive(false)
+                setClaudeFeed([])
+                setTranscript([])
+                setMood('Neutral')
+                setHeat(5)
+                setInstinct('Waiting for the call…')
+                setObjection(null)
+                setCallDuration(0)
+              }}
+              style={{ fontSize: 11, background: '#555', color: '#fff', border: 'none', borderRadius: 4, padding: '3px 10px', cursor: 'pointer', fontFamily: 'monospace' }}
+            >
+              ■ end test
+            </button>
           </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <div style={card}>
-              <div style={sectionLabel}>Pipeline stage</div>
-              <select value={stage} onChange={e => setStage(e.target.value)} style={{ width: '100%' }}>
-                {STAGES.map(s => <option key={s}>{s}</option>)}
-              </select>
-            </div>
-            <div style={card}>
-              <div style={sectionLabel}>Next action date</div>
-              <input type="date" value={nextActionDate} onChange={e => setNextActionDate(e.target.value)} style={{ width: '100%' }} />
-            </div>
-          </div>
-
-          <div style={card}>
-            <div style={sectionLabel}>Notes from this call</div>
-            <textarea
-              value={newNote}
-              onChange={e => setNewNote(e.target.value)}
-              placeholder="What happened? Any objections, commitments, or follow-up context..."
-              rows={4}
-              style={{ resize: 'vertical', width: '100%' }}
-            />
-          </div>
-
         </div>
       </div>
 
-      {/* WS debug bar */}
-      <div style={{
-        position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 999,
-        background: '#0a0a0a', borderTop: '1px solid #222',
-        padding: '3px 12px', display: 'flex', gap: 20, alignItems: 'center',
-        fontFamily: 'monospace', fontSize: 11,
-      }}>
-        <span style={{ color: wsStatus === 'connected' ? '#4ade80' : wsStatus === 'connecting' ? '#fbbf24' : '#f87171' }}>
-          ● WS {wsStatus}
-        </span>
-        {lastWsMsg && <span style={{ color: '#666' }}>last: {lastWsMsg}</span>}
-        <button
-          onClick={() => wsRef.current?.send(JSON.stringify({ type: 'manual_start' }))}
-          style={{
-            marginLeft: 'auto', background: '#1d4ed8', color: '#fff',
-            border: 'none', borderRadius: 4, padding: '2px 10px',
-            fontSize: 11, cursor: 'pointer', fontFamily: 'monospace',
-          }}
-        >
-          ▶ test cockpit
-        </button>
-      </div>
-
-      {/* Cockpit slide-in overlay */}
-      <AraCockpit
-        isOpen={cockpitOpen}
-        isLive={isLive}
-        callerIntel={callerIntel}
-        claudeFeed={claudeFeed}
-        transcript={transcript}
-        mood={mood}
-        heat={heat}
-        instinct={instinct}
-        objection={objection}
-        onSaveAndNext={handleCockpitSaveAndNext}
-        onSaveOnly={handleCockpitSaveOnly}
-        onEndCall={handleEndCall}
-      />
-
       <style>{`
-        @media (max-width: 768px) {
-          div[style*="gridTemplateColumns: 300px"] {
-            grid-template-columns: 1fr !important;
-            height: auto !important;
-            overflow: visible !important;
-          }
-          div[style*="gridTemplateColumns: 300px"] > div:first-child {
-            border-right: none !important;
-            border-bottom: 1px solid var(--border);
-            height: auto !important;
-            overflow: visible !important;
-          }
-          div[style*="gridTemplateColumns: 300px"] > div:last-child {
-            padding: 20px 16px !important;
-          }
-          div[style*="gridTemplateColumns: repeat(3"] {
-            grid-template-columns: repeat(2, 1fr) !important;
-          }
-          div[style*="gridTemplateColumns: 1fr 1fr"] {
-            grid-template-columns: 1fr !important;
-          }
-        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
       `}</style>
     </div>
   )
 }
 
-const sectionLabel: React.CSSProperties = {
-  fontSize: 11,
-  fontWeight: 600,
-  color: 'var(--muted)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.06em',
-  marginBottom: 10,
-}
-
-const fieldRow: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '8px 0',
-  borderBottom: '1px solid var(--border)',
-}
-
-const card: React.CSSProperties = {
-  background: 'var(--surface)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius)',
-  padding: '16px 20px',
-}

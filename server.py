@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -53,6 +54,7 @@ call_start_wall: Optional[float] = None
 full_transcript: list[dict] = []
 phrase_counter = 0
 analysis_counter = 0
+_speaker_turn = 0  # alternates 0/1 per phrase to distinguish speakers
 _loop: Optional[asyncio.AbstractEventLoop] = None
 auto_shutdown_task: Optional[asyncio.Task] = None
 
@@ -179,6 +181,8 @@ async def vad_stt_loop():
                 call_start_wall = time.time()
                 full_transcript.clear()
                 phrase_counter = 0
+                global _speaker_turn
+                _speaker_turn = 0
                 _cancel_shutdown()
                 await event_queue.put({"type": "call_started"})
                 print("[ara] call_started (auto-detected via VAD)")
@@ -207,7 +211,7 @@ async def vad_stt_loop():
 
 
 async def transcribe_and_analyse(audio_bytes: bytes):
-    global phrase_counter, analysis_counter
+    global phrase_counter, analysis_counter, _speaker_turn
 
     text = await asyncio.get_event_loop().run_in_executor(
         None, lambda: _transcribe_google(audio_bytes)
@@ -220,13 +224,17 @@ async def transcribe_and_analyse(audio_bytes: bytes):
     elapsed = int(time.time() - (call_start_wall or time.time()))
     time_str = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
 
+    speaker = _speaker_turn
+    _speaker_turn = 1 - _speaker_turn
+    label = "Caller" if speaker == 0 else "Them"
+
     line = {
         "id": phrase_counter,
         "time": time_str,
-        "label": "Caller",
+        "label": label,
         "text": text,
     }
-    full_transcript.append({"label": "Caller", "text": text})
+    full_transcript.append({"label": label, "text": text})
     await event_queue.put({"type": "transcript", "line": line})
 
     # Fire Claude analysis without blocking
@@ -285,7 +293,8 @@ async def run_claude_analysis(transcript_lines: list[dict]):
         )
 
         raw = response.content[0].text.strip()
-        data = json.loads(raw)
+        cleaned = re.sub(r"```(?:json)?|```", "", raw).strip()
+        data = json.loads(cleaned)
     except Exception as e:
         print(f"[claude] analysis error: {e}")
         return
@@ -302,7 +311,9 @@ async def run_claude_analysis(transcript_lines: list[dict]):
         }
     )
 
-    feed_msg = data.get("feed_message", "")
+    feed_msg = data.get("feed_message") or ""
+    if not feed_msg:
+        print("[claude] feed_message missing or empty — skipping feed update")
     if feed_msg:
         await event_queue.put(
             {
@@ -361,8 +372,9 @@ async def ws_handler(websocket):
                 call_active = True
                 full_transcript.clear()
                 phrase_counter = 0
-                global call_start_wall
+                global call_start_wall, _speaker_turn
                 call_start_wall = time.time()
+                _speaker_turn = 0
                 _cancel_shutdown()
                 await event_queue.put({"type": "call_started"})
                 print("[ara] call_started (manual)")
