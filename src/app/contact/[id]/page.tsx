@@ -108,11 +108,27 @@ export default function ContactPage() {
   const [callDuration, setCallDuration] = useState(0)
   const [newMessageId, setNewMessageId] = useState<number | null>(null)
   const [prevFeedLength, setPrevFeedLength] = useState(0)
+  const [detectedName, setDetectedName] = useState<string | null>(null)
+  const [nameStatus, setNameStatus] = useState<'unconfirmed' | 'confirmed'>('unconfirmed')
+  const [nameOverride, setNameOverride] = useState<string | null>(null)
+
+  // Playbook state
+  const [playbookOpener, setPlaybookOpener] = useState<string>('')
+  const [playbookObjections, setPlaybookObjections] = useState<{title: string; content: string}[]>([])
+  const [playbookCollapsed, setPlaybookCollapsed] = useState(false)
+  const [openerState, setOpenerState] = useState<'idle' | 'active' | 'flashing' | 'done'>('idle')
+  const [objectionFading, setObjectionFading] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
+  const pouTranscriptRef = useRef<HTMLDivElement>(null)
+  const nameCountRef = useRef<Record<string, number>>({})
+  const confirmedNameRef = useRef<string | null>(null)
+  const openerDoneRef = useRef(false)
+  const objectionRef = useRef<Objection>(null)
+  const objectionFadeRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const queueParam = searchParams.get('queue')
   const queue = queueParam ? queueParam.split(',').map(Number) : []
@@ -160,12 +176,27 @@ export default function ContactPage() {
     }
   }, [claudeFeed, prevFeedLength])
 
-  // Auto-scroll transcript
+  // Auto-scroll transcript columns — newest at top so scroll to 0
   useEffect(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
-    }
+    if (transcriptRef.current) transcriptRef.current.scrollTop = 0
+    if (pouTranscriptRef.current) pouTranscriptRef.current.scrollTop = 0
   }, [transcript])
+
+  // Load playbook on mount
+  useEffect(() => {
+    fetch('/api/playbook')
+      .then(r => r.json())
+      .then(data => {
+        const items: {type: string; title: string; content: string}[] = data.items || []
+        const opener = items.find(i => i.type === 'opener')
+        setPlaybookOpener(opener?.content || '')
+        setPlaybookObjections(items.filter(i => i.type === 'objection').map(i => ({ title: i.title, content: i.content })))
+      })
+      .catch(() => {})
+  }, [])
+
+  // Keep objectionRef in sync for use inside WS closure
+  useEffect(() => { objectionRef.current = objection }, [objection])
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
@@ -192,6 +223,15 @@ export default function ContactPage() {
           setPrevFeedLength(0)
           setNewMessageId(null)
           setIsLive(true)
+          nameCountRef.current = {}
+          confirmedNameRef.current = null
+          setDetectedName(null)
+          setNameStatus('unconfirmed')
+          setNameOverride(null)
+          openerDoneRef.current = false
+          setOpenerState('active')
+          if (objectionFadeRef.current) clearTimeout(objectionFadeRef.current)
+          setObjectionFading(false)
           break
         case 'transcript':
           setTranscript(prev => [...prev, msg.line as TranscriptLine])
@@ -205,8 +245,51 @@ export default function ContactPage() {
           setInstinct(String(msg.instinct ?? ''))
           break
         case 'objection':
+          if (objectionFadeRef.current) clearTimeout(objectionFadeRef.current)
+          setObjectionFading(false)
           setObjection({ text: String(msg.text ?? ''), response: String(msg.response ?? '') })
           break
+        case 'objection_cleared':
+          if (objectionRef.current) {
+            if (objectionFadeRef.current) clearTimeout(objectionFadeRef.current)
+            setObjectionFading(true)
+            objectionFadeRef.current = setTimeout(() => {
+              setObjection(null)
+              objectionRef.current = null
+              setObjectionFading(false)
+            }, 5000)
+          }
+          break
+        case 'opener_status':
+          if (msg.done && !openerDoneRef.current) {
+            openerDoneRef.current = true
+            setOpenerState('flashing')
+            setTimeout(() => setOpenerState('done'), 1200)
+          }
+          break
+        case 'name_detected': {
+          const name = String(msg.name).trim()
+          const counts = nameCountRef.current
+          counts[name] = (counts[name] ?? 0) + 1
+          const confirmed = confirmedNameRef.current
+          if (confirmed) {
+            if (name !== confirmed) setNameOverride(name)
+          } else {
+            setDetectedName(name)
+            if (counts[name] >= 2) {
+              confirmedNameRef.current = name
+              setNameStatus('confirmed')
+              fetch('/api/contact', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rowIndex, nameDetected: name }),
+              })
+            } else {
+              setNameStatus('unconfirmed')
+            }
+          }
+          break
+        }
         case 'call_ended':
           setIsLive(false)
           break
@@ -279,6 +362,18 @@ export default function ContactPage() {
     setNewNote('')
     setSaving(false)
     fetchContact()
+  }
+
+  function applyNameOverride(name: string) {
+    confirmedNameRef.current = name
+    setDetectedName(name)
+    setNameStatus('confirmed')
+    setNameOverride(null)
+    fetch('/api/contact', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rowIndex, nameDetected: name }),
+    })
   }
 
   if (loading) return (
@@ -419,6 +514,36 @@ export default function ContactPage() {
             ))}
           </div>
 
+          {/* Detected name */}
+          {detectedName && (
+            <div>
+              <div style={sectionLabel}>Detected name</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: nameOverride ? 6 : 0 }}>
+                <span style={{ fontSize: 13, fontWeight: 500, color: '#1a1a1a' }}>{detectedName}</span>
+                {nameStatus === 'confirmed' ? (
+                  <span style={{ fontSize: 10, color: '#2e7d32', background: '#e8f5e9', border: '0.5px solid #a5d6a7', borderRadius: 10, padding: '1px 6px' }}>✓ Confirmed</span>
+                ) : (
+                  <span style={{ fontSize: 10, color: '#f57f17', background: '#fff8e1', border: '0.5px solid #ffe082', borderRadius: 10, padding: '1px 6px' }}>⚠ Unconfirmed</span>
+                )}
+              </div>
+              {nameOverride && (
+                <div style={{ background: '#fff8e1', border: '0.5px solid #ffe082', borderRadius: 6, padding: '8px 10px', fontSize: 11, marginTop: 6 }}>
+                  <div style={{ color: '#e65100', marginBottom: 6 }}>⚠ New name heard: {nameOverride}</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={() => setNameOverride(null)}
+                      style={{ fontSize: 11, padding: '3px 8px', borderRadius: 4, border: '0.5px solid #ccc', background: '#fff', cursor: 'pointer' }}>
+                      Keep {detectedName}
+                    </button>
+                    <button onClick={() => applyNameOverride(nameOverride)}
+                      style={{ fontSize: 11, padding: '3px 8px', borderRadius: 4, border: 'none', background: '#1a237e', color: '#fff', cursor: 'pointer' }}>
+                      Use {nameOverride}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Pipeline stage */}
           <div>
             <div style={sectionLabel}>Pipeline stage</div>
@@ -496,14 +621,93 @@ export default function ContactPage() {
             <span style={{ fontSize: 12, color: '#555', fontStyle: 'italic' }}>&ldquo;{instinct}&rdquo;</span>
           </div>
 
-          {/* Objection card */}
-          {objection && (
+          {/* Playbook Bar */}
+          {!playbookCollapsed ? (
             <div style={{
-              background: '#fff8e1', border: '0.5px solid #ffe082', borderRadius: 7,
-              padding: '7px 12px', fontSize: 11, color: '#e65100',
-              margin: '8px 12px 0', flexShrink: 0,
+              background: '#fff',
+              borderBottom: '0.5px solid #e8e6df',
+              flexShrink: 0,
+              display: 'flex',
+              minHeight: 56,
+              maxHeight: 96,
+              position: 'relative',
             }}>
-              <span style={{ fontWeight: 500 }}>⚠ {objection.text} — </span>{objection.response}
+              {/* Zone 1 — Opener */}
+              <div style={{
+                flex: 1,
+                padding: '8px 12px',
+                borderRight: '0.5px solid #e8e6df',
+                display: 'flex',
+                alignItems: 'center',
+                overflowY: 'auto',
+                ...(openerState === 'active' ? { animation: 'pulseGreenBorder 2s ease-in-out infinite' } : {}),
+                ...(openerState === 'flashing' ? { background: '#4caf50' } : {}),
+              }}>
+                {openerState === 'flashing' ? (
+                  <span style={{ fontSize: 15, fontWeight: 600, color: '#fff' }}>✓ Opener done!</span>
+                ) : openerState === 'active' && playbookOpener ? (
+                  <span style={{ fontSize: 13, color: '#1a1a1a', lineHeight: 1.45 }}>{playbookOpener}</span>
+                ) : openerState === 'done' ? (
+                  <span style={{ fontSize: 11, color: '#4caf50', fontStyle: 'italic' }}>✓ Opener complete</span>
+                ) : (
+                  <span style={{ fontSize: 11, color: '#ccc', fontStyle: 'italic' }}>Waiting for call…</span>
+                )}
+              </div>
+
+              {/* Zone 2 — Active objection */}
+              <div style={{
+                flex: 1,
+                padding: '8px 12px',
+                paddingRight: 36,
+                display: 'flex',
+                alignItems: 'center',
+                overflowY: 'auto',
+              }}>
+                {objection ? (() => {
+                  const matched = playbookObjections.find(o =>
+                    objection.text.toLowerCase().includes(o.title.toLowerCase()) ||
+                    o.title.toLowerCase().includes(objection.text.toLowerCase())
+                  )
+                  const response = matched?.content ?? objection.response
+                  return (
+                    <div style={{
+                      background: '#fff8e1',
+                      border: '0.5px solid #ffe082',
+                      borderRadius: 7,
+                      padding: '6px 10px',
+                      fontSize: 11,
+                      width: '100%',
+                      ...(objectionFading ? { opacity: 0, transition: 'opacity 5s ease' } : { opacity: 1 }),
+                    }}>
+                      <div style={{ fontWeight: 600, color: '#e65100', marginBottom: 2 }}>⚠ {objection.text}</div>
+                      <div style={{ color: '#78350f', lineHeight: 1.4 }}>{response}</div>
+                    </div>
+                  )
+                })() : (
+                  <span style={{ fontSize: 11, color: '#ccc', fontStyle: 'italic' }}>No objection detected</span>
+                )}
+              </div>
+
+              {/* Collapse chevron */}
+              <button
+                onClick={() => setPlaybookCollapsed(true)}
+                style={{
+                  position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: '0.5px solid #e8e6df', borderRadius: 4,
+                  cursor: 'pointer', fontSize: 10, color: '#bbb', padding: '2px 6px', lineHeight: 1,
+                }}
+              >▾</button>
+            </div>
+          ) : (
+            <div style={{
+              background: '#fff', borderBottom: '0.5px solid #e8e6df',
+              flexShrink: 0, display: 'flex', alignItems: 'center', padding: '4px 10px', gap: 6,
+            }}>
+              <span style={{ fontSize: 9, fontWeight: 600, color: '#bbb', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Playbook</span>
+              <button
+                onClick={() => setPlaybookCollapsed(false)}
+                style={{ background: 'none', border: '0.5px solid #e8e6df', borderRadius: 4, cursor: 'pointer', fontSize: 10, color: '#bbb', padding: '1px 6px' }}
+              >▸</button>
             </div>
           )}
 
@@ -554,19 +758,31 @@ export default function ContactPage() {
                 <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#2196f3', boxShadow: '0 0 0 2px #bbdefb' }} />
                 <span style={{ fontSize: 10, fontWeight: 500, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Live transcript</span>
               </div>
-              <div ref={transcriptRef} style={{ flex: 1, padding: '10px 12px', overflowY: 'auto' }}>
-                {transcript.length === 0 && (
-                  <div style={{ fontSize: 12, color: '#bbb', fontStyle: 'italic', padding: 8 }}>Transcript will appear here…</div>
-                )}
-                {transcript.map(line => (
-                  <div key={line.id} style={{ display: 'flex', gap: 8, marginBottom: 5, alignItems: 'flex-start' }}>
-                    <span style={{ fontSize: 10, color: '#bbb', fontWeight: 500, minWidth: 32, paddingTop: 1, fontVariantNumeric: 'tabular-nums' }}>{line.time}</span>
-                    <span style={{ fontSize: 10, fontWeight: 500, color: line.label === 'Caller' || line.label === 'Pouroa' ? '#1a237e' : '#c62828', minWidth: 48, paddingTop: 1 }}>
-                      {line.label === 'Caller' || line.label === 'Pouroa' ? 'Pou' : line.label}
-                    </span>
-                    <span style={{ fontSize: 12, color: '#333', lineHeight: 1.4, flex: 1, minWidth: 0, wordBreak: 'break-word', whiteSpace: 'normal' }}>{line.text}</span>
-                  </div>
-                ))}
+              <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', minHeight: 0, overflow: 'hidden' }}>
+                {/* Pou — navy, left-aligned, newest first */}
+                <div ref={pouTranscriptRef} style={{ overflowY: 'auto', padding: '10px 8px', borderRight: '0.5px solid #f0ede6', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {transcript.filter(l => l.label === 'Pou' || l.label === 'Caller' || l.label === 'Pouroa').length === 0 && (
+                    <div style={{ fontSize: 11, color: '#bbb', fontStyle: 'italic', padding: '4px 6px' }}>Nothing yet…</div>
+                  )}
+                  {transcript.filter(l => l.label === 'Pou' || l.label === 'Caller' || l.label === 'Pouroa').slice().reverse().map(line => (
+                    <div key={line.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', animation: 'msgSlideIn 0.25s ease' }}>
+                      <div style={{ background: '#1a237e', color: '#fff', padding: '8px 12px', borderRadius: 18, borderBottomLeftRadius: 4, fontSize: 12, lineHeight: 1.4, maxWidth: '92%', wordBreak: 'break-word' }}>{line.text}</div>
+                      <div style={{ fontSize: 10, color: '#bbb', marginTop: 3, paddingLeft: 4 }}>{line.time}</div>
+                    </div>
+                  ))}
+                </div>
+                {/* Tradie — amber, right-aligned, newest first */}
+                <div ref={transcriptRef} style={{ overflowY: 'auto', padding: '10px 8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {transcript.filter(l => l.label !== 'Pou' && l.label !== 'Caller' && l.label !== 'Pouroa').length === 0 && (
+                    <div style={{ fontSize: 11, color: '#bbb', fontStyle: 'italic', padding: '4px 6px' }}>Nothing yet…</div>
+                  )}
+                  {transcript.filter(l => l.label !== 'Pou' && l.label !== 'Caller' && l.label !== 'Pouroa').slice().reverse().map(line => (
+                    <div key={line.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', animation: 'msgSlideIn 0.25s ease' }}>
+                      <div style={{ background: '#f59e0b', color: '#1a1a1a', padding: '8px 12px', borderRadius: 18, borderBottomRightRadius: 4, fontSize: 12, lineHeight: 1.4, maxWidth: '92%', wordBreak: 'break-word' }}>{line.text}</div>
+                      <div style={{ fontSize: 10, color: '#bbb', marginTop: 3, paddingRight: 4 }}>{line.time}</div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -620,6 +836,8 @@ export default function ContactPage() {
       <style>{`
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
         @keyframes slideIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes msgSlideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulseGreenBorder { 0%, 100% { box-shadow: inset 0 0 0 2px #4caf5055; } 50% { box-shadow: inset 0 0 0 2px #4caf50cc; } }
         ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
