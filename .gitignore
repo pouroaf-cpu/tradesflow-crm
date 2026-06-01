@@ -39,3 +39,22 @@ next-env.d.ts
 
 .vercel
 .env*.local
+# === Internal/agent docs — never upload (see _agent-system/RULES.md) ===
+CLAUDE.md
+RULES.md
+CONVENTIONS.md
+CODEX*.md
+*_TASK.md
+claude*.md
+HANDOFF.md
+STATUS.md
+FILE_MAP.md
+AGENTS.md
+SESSION_LOG.md
+MEMORY.md
+README_FOR_AI.md
+ai/AI_*.md
+ACTIVE/
+journal/
+.claude/
+!README.md

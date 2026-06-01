@@ -1,0 +1,19 @@
+# === Internal/agent docs — never upload (see _agent-system/RULES.md) ===
+CLAUDE.md
+RULES.md
+CONVENTIONS.md
+CODEX.md
+CODEX_TASK.md
+CLAUDE_TASK.md
+CLAUDE_CODE_TASK.md
+QWEN_TASK.md
+claude*.md
+HANDOFF.md
+STATUS.md
+FILE_MAP.md
+AGENTS.md
+SESSION_LOG.md
+AI_PROMPT_RULES.md
+ACTIVE/
+journal/
+!README.md
