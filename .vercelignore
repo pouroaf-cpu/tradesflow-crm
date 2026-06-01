@@ -17,3 +17,7 @@ AI_PROMPT_RULES.md
 ACTIVE/
 journal/
 !README.md
+# === No markdown to GitHub/deploys except README (see _agent-system/RULES.md) ===
+*.md
+!README.md
+!**/README.md
